@@ -17,6 +17,9 @@ CREATE TABLE users (
   password_hash  VARCHAR(255) NOT NULL,
   role           user_role NOT NULL DEFAULT 'student',
   avatar_url     TEXT,
+  date_of_birth  DATE,
+  reset_token         VARCHAR(255),
+  reset_token_expires TIMESTAMPTZ,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
