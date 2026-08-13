@@ -1,47 +1,60 @@
 """
-Sends transactional email (currently just password reset) via Gmail SMTP.
+Transactional email helpers for Quad Marketplace.
 
-Setup required in .env / Render environment variables:
-  SMTP_EMAIL          - the Gmail address sending the mail (e.g. longman661.ab@gmail.com)
-  SMTP_APP_PASSWORD   - a Gmail "App Password" (NOT your normal Gmail password)
-                         Generate one at: https://myaccount.google.com/apppasswords
-                         (requires 2-Step Verification to be turned on for the Google account)
-  FRONTEND_URL         - the live site URL, used to build the reset link
-                          e.g. https://quad-marketplace.netlify.app
+Password-reset email is sent through the Resend HTTPS API instead of SMTP.
+This works on Render Free because it uses outbound HTTPS rather than SMTP
+ports 25/465/587.
+
+Required environment variables:
+  RESEND_API_KEY      - Resend API key (starts with ``re_``)
+  RESEND_FROM_EMAIL   - verified sender, e.g. ``Quad <noreply@yourdomain.com>``
+  FRONTEND_URL        - live frontend URL, e.g. ``https://quad-marketplace.netlify.app``
 """
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+
+from html import escape
+
+import requests
 
 from app.config import settings
 
 
+RESEND_API_URL = "https://api.resend.com/emails"
+
+
 def send_password_reset_email(to_email: str, full_name: str, reset_token: str) -> bool:
-    if not settings.smtp_email or not settings.smtp_app_password:
-        # Not configured — fail quietly rather than crashing the request.
-        print("SMTP not configured; skipping email send. Set SMTP_EMAIL and SMTP_APP_PASSWORD.")
+    """Send a password-reset email through Resend.
+
+    Returns True only when Resend accepts the email request. Any network or
+    API error is logged and returns False so the caller can handle the failure.
+    """
+    if not settings.resend_api_key or not settings.resend_from_email:
+        print(
+            "Resend not configured; skipping email send. "
+            "Set RESEND_API_KEY and RESEND_FROM_EMAIL."
+        )
         return False
 
-    reset_link = f"{settings.frontend_url}/reset-password.html?token={reset_token}"
+    reset_link = (
+        f"{settings.frontend_url.rstrip('/')}/reset-password.html?token={reset_token}"
+    )
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Reset your Quad password"
-    msg["From"] = settings.smtp_email
-    msg["To"] = to_email
+    safe_name = escape(full_name or "there")
+    safe_reset_link = escape(reset_link, quote=True)
 
     text_body = (
-        f"Hi {full_name},\n\n"
-        f"Someone requested a password reset for your Quad account.\n"
+        f"Hi {full_name or 'there'},\n\n"
+        "Someone requested a password reset for your Quad account.\n"
         f"Reset it here (link expires in 1 hour): {reset_link}\n\n"
-        f"If you didn't request this, you can safely ignore this email."
+        "If you didn't request this, you can safely ignore this email."
     )
+
     html_body = f"""
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
       <h2 style="color:#14213D;">Reset your Quad password</h2>
-      <p>Hi {full_name},</p>
+      <p>Hi {safe_name},</p>
       <p>Someone requested a password reset for your Quad account. This link expires in 1 hour.</p>
       <p style="text-align:center;margin:28px 0;">
-        <a href="{reset_link}" style="background:#FFB627;color:#14213D;padding:12px 28px;
+        <a href="{safe_reset_link}" style="background:#FFB627;color:#14213D;padding:12px 28px;
            border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block;">
           Reset Password
         </a>
@@ -52,15 +65,49 @@ def send_password_reset_email(to_email: str, full_name: str, reset_token: str) -
     </div>
     """
 
-    msg.attach(MIMEText(text_body, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
+    payload = {
+        "from": settings.resend_from_email,
+        "to": [to_email],
+        "subject": "Reset your Quad password",
+        "text": text_body,
+        "html": html_body,
+        "tags": [{"name": "category", "value": "password_reset"}],
+    }
+
+    headers = {
+        "Authorization": f"Bearer {settings.resend_api_key}",
+        "Content-Type": "application/json",
+    }
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(settings.smtp_email, settings.smtp_app_password)
-            server.sendmail(settings.smtp_email, to_email, msg.as_string())
-        return True
-    except Exception as e:
-        print(f"Failed to send reset email: {e}")
+        response = requests.post(
+            RESEND_API_URL,
+            json=payload,
+            headers=headers,
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        print(f"Failed to send reset email through Resend: {exc}")
         return False
+
+    if response.ok:
+        try:
+            data = response.json()
+            print(f"Password reset email accepted by Resend (id={data.get('id', 'unknown')})")
+        except ValueError:
+            print("Password reset email accepted by Resend.")
+        return True
+
+    # Log the provider's response, but never log the API key.
+    try:
+        error_data = response.json()
+        print(
+            "Resend rejected password reset email "
+            f"(HTTP {response.status_code}): {error_data}"
+        )
+    except ValueError:
+        print(
+            "Resend rejected password reset email "
+            f"(HTTP {response.status_code}): {response.text[:500]}"
+        )
+    return False

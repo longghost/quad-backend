@@ -65,7 +65,15 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
     user.reset_token_expires = datetime.now(timezone.utc) + timedelta(hours=1)
     db.commit()
 
-    send_password_reset_email(user.email, user.full_name, user.reset_token)
+    email_sent = send_password_reset_email(user.email, user.full_name, user.reset_token)
+
+    # Do not reveal whether an account exists. If the provider rejects the
+    # message, clear the token so the user can safely request another reset.
+    if not email_sent:
+        user.reset_token = None
+        user.reset_token_expires = None
+        db.commit()
+
     return generic_response
 
 
