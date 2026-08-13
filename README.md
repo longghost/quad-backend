@@ -64,11 +64,11 @@ quad-backend-py/
 Same endpoints, same behavior as the Node version — only the implementation changed. Full interactive reference is auto-generated at `/docs` once the server is running, but in short:
 
 - `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`
-- `GET /api/listings` (search, category, sort, page, limit), `GET /api/listings/{id}`, `POST /api/listings` (multipart, up to 6 photos, owner), `PATCH /api/listings/{id}`, `DELETE /api/listings/{id}`
+- `GET /api/listings` (authenticated), `GET /api/listings/{id}` (authenticated), `POST /api/listings` (authenticated; up to 6 validated photos), `PATCH /api/listings/{id}`, `DELETE /api/listings/{id}`
 - `GET /api/categories`
 - `POST /api/reviews`, `GET /api/reviews/seller/{seller_id}`
 - `GET /api/messages/threads`, `GET /api/messages/thread/{other_user_id}?listing_id=`, `POST /api/messages`
-- `POST /api/reports` (no auth, rate-limited to 10/15min), `GET /api/reports/{reference}`
+- `POST /api/reports` (rate-limited; public general reports remain supported), `GET /api/reports/{reference}`
 - `GET /api/admin/reports?status=`, `PATCH /api/admin/reports/{id}` (admin only)
 
 Auth routes: send the JWT as `Authorization: Bearer <token>`.
@@ -80,4 +80,4 @@ Same idea as before: in `js/main.js`, replace `QUAD.data.listings` with `fetch('
 ## Notes
 - The `/docs` page is a fast way to sanity-check each endpoint (send a request, see the response) before wiring up the front-end at all.
 - Promote a user to admin by hand: `UPDATE users SET role = 'admin' WHERE email = '...';` (or use the seeded admin account).
-- Photos are saved to local disk — fine for coursework; swap for cloud storage if you deploy somewhere with an ephemeral filesystem.
+- Security hardening: listing browsing/details require a valid JWT; listing creation/edit/delete is owner-only; messages/reviews/payments require authentication; auth endpoints are rate-limited; uploads are limited to validated image types and sizes; CORS defaults to the deployed Netlify origin; password-reset tokens are single-use and expire after 1 hour. Photos are saved to local disk — fine for coursework; swap for cloud storage if you deploy somewhere with an ephemeral filesystem.

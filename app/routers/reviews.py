@@ -1,16 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models import Review, User
 from app.schemas import ReviewCreate, ReviewOut
+from app.limiter import limiter
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
 
 
 @router.post("", status_code=201)
+@limiter.limit("5/hour")
 def create_review(
+    request: Request,
     payload: ReviewCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

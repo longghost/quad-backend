@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -11,12 +11,20 @@ from app.models import User
 from app.schemas import RegisterRequest, LoginRequest, TokenResponse, UserOut, ForgotPasswordRequest, ResetPasswordRequest
 from app.security import hash_password, verify_password, create_access_token
 from app.email_utils import send_password_reset_email
+from app.limiter import limiter
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=TokenResponse, status_code=201)
-def register(payload: RegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/hour")
+def register(request: Request, payload: RegisterRequest, db: Session = Depends(get_db)):
+    payload.full_name = payload.full_name.strip()
+    payload.university = payload.university.strip()
+    if not payload.full_name or len(payload.full_name) > 120:
+        raise HTTPException(status_code=400, detail="Full name is required and must be 120 characters or fewer")
+    if not payload.university or len(payload.university) > 160:
+        raise HTTPException(status_code=400, detail="University is required and must be 160 characters or fewer")
     user = User(
         full_name=payload.full_name,
         email=payload.email.lower(),
@@ -37,7 +45,8 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email.lower()).first()
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -52,7 +61,8 @@ def me(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/forgot-password", status_code=200)
-def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/hour")
+def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email.lower()).first()
     # Always return the same generic message, whether or not the email exists —
     # this stops someone using this endpoint to check who has an account.
@@ -78,7 +88,8 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
 
 
 @router.post("/reset-password", status_code=200)
-def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/hour")
+def reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.reset_token == payload.token).first()
 
     if user is None or user.reset_token_expires is None:

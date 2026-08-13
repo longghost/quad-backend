@@ -29,9 +29,11 @@ def list_listings(
     page: int = 1,
     limit: int = 24,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    limit = min(limit, 100)
+    limit = min(max(limit, 1), 100)
     page = max(page, 1)
+    search = search[:200]
 
     avg_rating = func.coalesce(func.avg(Review.rating), 0).label("seller_rating")
     first_image = (
@@ -72,7 +74,11 @@ def list_listings(
 
 
 @router.get("/{listing_id}", response_model=ListingDetail)
-def get_listing(listing_id: int, db: Session = Depends(get_db)):
+def get_listing(
+    listing_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     avg_rating = func.coalesce(func.avg(Review.rating), 0).label("seller_rating")
     review_count = func.count(func.distinct(Review.id)).label("review_count")
 
@@ -121,8 +127,16 @@ def create_listing(
     cat = db.query(Category).filter(Category.name == category).first()
     if cat is None:
         raise HTTPException(status_code=400, detail="Unknown category")
+    title = title.strip()
+    if not title or len(title) > 160:
+        raise HTTPException(status_code=400, detail="Title must be between 1 and 160 characters")
+    if price < 0 or price > 10_000_000:
+        raise HTTPException(status_code=400, detail="Price is outside the allowed range")
     if len(photos) > 6:
         raise HTTPException(status_code=400, detail="Maximum 6 photos")
+
+    max_photo_bytes = 5 * 1024 * 1024
+    total_photo_bytes = 0
 
     listing = Listing(
         seller_id=current_user.id, category_id=cat.id, title=title,
@@ -134,16 +148,30 @@ def create_listing(
 
     os.makedirs(settings.upload_dir, exist_ok=True)
     for position, photo in enumerate(photos):
-        if not photo.content_type or not photo.content_type.startswith("image/"):
-            raise HTTPException(status_code=400, detail="Only image files are allowed")
-        ext = os.path.splitext(photo.filename or "")[1]
+        if photo.content_type not in {"image/jpeg", "image/png", "image/webp", "image/gif"}:
+            raise HTTPException(status_code=400, detail="Only JPEG, PNG, WebP, or GIF images are allowed")
+        content = photo.file.read(max_photo_bytes + 1)
+        if len(content) > max_photo_bytes:
+            raise HTTPException(status_code=400, detail="Each photo must be 5 MB or smaller")
+        total_photo_bytes += len(content)
+        if total_photo_bytes > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Total photo upload must be 20 MB or smaller")
+        signatures = {
+            "image/jpeg": content[:3] == b"\xff\xd8\xff",
+            "image/png": content.startswith(b"\x89PNG\r\n\x1a\n"),
+            "image/gif": content[:6] in {b"GIF87a", b"GIF89a"},
+            "image/webp": content[:12].startswith(b"RIFF") and content[8:12] == b"WEBP",
+        }
+        if not signatures.get(photo.content_type, False):
+            raise HTTPException(status_code=400, detail="The uploaded file is not a valid image")
+        ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}[photo.content_type]
         filename = f"{uuid.uuid4().hex}{ext}"
         with open(os.path.join(settings.upload_dir, filename), "wb") as f:
-            f.write(photo.file.read())
+            f.write(content)
         db.add(ListingImage(listing_id=listing.id, url=f"/uploads/{filename}", position=position))
 
     db.commit()
-    return get_listing(listing.id, db)
+    return get_listing(listing.id, db, current_user)
 
 
 @router.patch("/{listing_id}", response_model=ListingDetail)
@@ -159,11 +187,16 @@ def update_listing(
     if listing.seller_id != current_user.id:
         raise HTTPException(status_code=403, detail="You do not own this listing")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    if "status" in changes and changes["status"] not in {"active", "sold", "removed"}:
+        raise HTTPException(status_code=400, detail="Invalid listing status")
+    if "title" in changes and (not changes["title"] or len(changes["title"].strip()) > 160):
+        raise HTTPException(status_code=400, detail="Title must be between 1 and 160 characters")
+    for field, value in changes.items():
         setattr(listing, field, value)
 
     db.commit()
-    return get_listing(listing_id, db)
+    return get_listing(listing_id, db, current_user)
 
 
 @router.delete("/{listing_id}", status_code=204)

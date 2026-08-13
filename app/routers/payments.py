@@ -19,7 +19,7 @@ def verify_payment(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    listing = db.get(Listing, payload.listing_id)
+    listing = db.query(Listing).filter(Listing.id == payload.listing_id).with_for_update().first()
     if listing is None:
         raise HTTPException(status_code=404, detail="Listing not found")
     if listing.status == "sold":

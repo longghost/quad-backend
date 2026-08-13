@@ -9,7 +9,7 @@ class Settings:
     jwt_secret: str = os.getenv("JWT_SECRET", "")
     jwt_algorithm: str = "HS256"
     jwt_expires_days: int = 7
-    cors_origin: str = os.getenv("CORS_ORIGIN", "*")
+    cors_origin: str = os.getenv("CORS_ORIGIN", "https://quad-marketplace.netlify.app").strip().rstrip("/")
     upload_dir: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
     paystack_secret_key: str = os.getenv("PAYSTACK_SECRET_KEY", "")
     resend_api_key: str = os.getenv("RESEND_API_KEY", "")

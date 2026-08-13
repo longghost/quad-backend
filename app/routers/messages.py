@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.models import Message, User
+from app.models import Message, User, Listing
 from app.schemas import MessageCreate, MessageOut, ThreadOut
+from app.limiter import limiter
 
 router = APIRouter(prefix="/api/messages", tags=["messages"])
 
@@ -63,19 +64,35 @@ def thread_detail(
 
 
 @router.post("", response_model=MessageOut, status_code=201)
+@limiter.limit("30/minute")
 def send_message(
+    request: Request,
     payload: MessageCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     if payload.receiver_id == current_user.id:
         raise HTTPException(status_code=400, detail="You cannot message yourself")
+    receiver = db.get(User, payload.receiver_id)
+    if receiver is None:
+        raise HTTPException(status_code=404, detail="Recipient not found")
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    if len(body) > 5000:
+        raise HTTPException(status_code=400, detail="Message is too long")
+    if payload.listing_id is not None:
+        listing = db.get(Listing, payload.listing_id)
+        if listing is None:
+            raise HTTPException(status_code=404, detail="Listing not found")
+        if current_user.id != listing.seller_id and payload.receiver_id != listing.seller_id:
+            raise HTTPException(status_code=403, detail="Messages for a listing must involve its seller")
 
     message = Message(
         listing_id=payload.listing_id,
         sender_id=current_user.id,
         receiver_id=payload.receiver_id,
-        body=payload.body,
+        body=body,
     )
     db.add(message)
     db.commit()
