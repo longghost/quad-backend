@@ -1,5 +1,13 @@
 import os
 import uuid
+import cloudinary
+import cloudinary.uploader
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+    secure=True,
+)
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy import func, desc, asc
@@ -110,8 +118,6 @@ def get_listing(
         seller_avatar=row.seller_avatar, seller_rating=float(row.seller_rating),
         review_count=row.review_count, images=images,
     )
-
-
 @router.post("", response_model=ListingDetail, status_code=201)
 def create_listing(
     title: str = Form(...),
@@ -127,52 +133,110 @@ def create_listing(
     cat = db.query(Category).filter(Category.name == category).first()
     if cat is None:
         raise HTTPException(status_code=400, detail="Unknown category")
+
     title = title.strip()
+
     if not title or len(title) > 160:
-        raise HTTPException(status_code=400, detail="Title must be between 1 and 160 characters")
+        raise HTTPException(
+            status_code=400,
+            detail="Title must be between 1 and 160 characters"
+        )
+
     if price < 0 or price > 10_000_000:
-        raise HTTPException(status_code=400, detail="Price is outside the allowed range")
+        raise HTTPException(
+            status_code=400,
+            detail="Price is outside the allowed range"
+        )
+
     if len(photos) > 6:
-        raise HTTPException(status_code=400, detail="Maximum 6 photos")
+        raise HTTPException(
+            status_code=400,
+            detail="Maximum 6 photos"
+        )
 
     max_photo_bytes = 5 * 1024 * 1024
     total_photo_bytes = 0
 
     listing = Listing(
-        seller_id=current_user.id, category_id=cat.id, title=title,
-        description=description, price=price, condition=condition,
+        seller_id=current_user.id,
+        category_id=cat.id,
+        title=title,
+        description=description,
+        price=price,
+        condition=condition,
         pickup_location=pickup_location,
     )
-    db.add(listing)
-    db.flush()  # assigns listing.id without committing yet
 
-    os.makedirs(settings.upload_dir, exist_ok=True)
+    db.add(listing)
+    db.flush()
+
     for position, photo in enumerate(photos):
-        if photo.content_type not in {"image/jpeg", "image/png", "image/webp", "image/gif"}:
-            raise HTTPException(status_code=400, detail="Only JPEG, PNG, WebP, or GIF images are allowed")
+
+        if photo.content_type not in {
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/gif",
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail="Only JPEG, PNG, WebP, or GIF images are allowed"
+            )
+
         content = photo.file.read(max_photo_bytes + 1)
+
         if len(content) > max_photo_bytes:
-            raise HTTPException(status_code=400, detail="Each photo must be 5 MB or smaller")
+            raise HTTPException(
+                status_code=400,
+                detail="Each photo must be 5 MB or smaller"
+            )
+
         total_photo_bytes += len(content)
+
         if total_photo_bytes > 20 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="Total photo upload must be 20 MB or smaller")
+            raise HTTPException(
+                status_code=400,
+                detail="Total photo upload must be 20 MB or smaller"
+            )
+
         signatures = {
             "image/jpeg": content[:3] == b"\xff\xd8\xff",
             "image/png": content.startswith(b"\x89PNG\r\n\x1a\n"),
             "image/gif": content[:6] in {b"GIF87a", b"GIF89a"},
-            "image/webp": content[:12].startswith(b"RIFF") and content[8:12] == b"WEBP",
+            "image/webp": (
+                content[:12].startswith(b"RIFF")
+                and content[8:12] == b"WEBP"
+            ),
         }
+
         if not signatures.get(photo.content_type, False):
-            raise HTTPException(status_code=400, detail="The uploaded file is not a valid image")
-        ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}[photo.content_type]
-        filename = f"{uuid.uuid4().hex}{ext}"
-        with open(os.path.join(settings.upload_dir, filename), "wb") as f:
-            f.write(content)
-        db.add(ListingImage(listing_id=listing.id, url=f"/uploads/{filename}", position=position))
+            raise HTTPException(
+                status_code=400,
+                detail="The uploaded file is not a valid image"
+            )
+
+        # Upload the image to Cloudinary
+        upload_result = cloudinary.uploader.upload(
+            content,
+            folder="quad-marketplace/listings",
+            resource_type="image",
+        )
+
+        # Get the permanent Cloudinary URL
+        image_url = upload_result["secure_url"]
+
+        # Save the Cloudinary URL in the database
+        db.add(
+            ListingImage(
+                listing_id=listing.id,
+                url=image_url,
+                position=position,
+            )
+        )
 
     db.commit()
-    return get_listing(listing.id, db, current_user)
 
+    return get_listing(listing.id, db, current_user)
 
 @router.patch("/{listing_id}", response_model=ListingDetail)
 def update_listing(

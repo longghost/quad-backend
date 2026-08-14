@@ -10,3 +10,4 @@ python-multipart==0.0.9
 pydantic[email]>=2.10.0
 slowapi==0.1.9
 requests==2.32.3
+cloudinary==1.45.0
